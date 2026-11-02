@@ -15,6 +15,9 @@ type AppOptions struct {
 	LogLevel                    logrus.Level
 	TokenDir                    string
 	LiveRefresh                 bool
+	AutoRefresh                 bool
+	TokenRefreshCommand         string
+	TokenRefreshTimeout         time.Duration
 	RefreshMessagesInterval     time.Duration
 	RefreshConversationInterval time.Duration
 	ShowHelp                    bool
@@ -27,6 +30,8 @@ func defaultAppOptions() AppOptions {
 		MessageLimit:                defaultMessageLimit,
 		LogLevel:                    logrus.InfoLevel,
 		LiveRefresh:                 true,
+		AutoRefresh:                 true,
+		TokenRefreshTimeout:         defaultTokenRefreshTimeout,
 		RefreshMessagesInterval:     defaultLiveMessageRefreshInterval,
 		RefreshConversationInterval: defaultLiveConversationRefreshInterval,
 	}
@@ -49,6 +54,30 @@ func parseAppOptions(args []string) (AppOptions, error) {
 			options.LogLevel = logrus.DebugLevel
 		case arg == "--no-live":
 			options.LiveRefresh = false
+		case arg == "--no-auto-refresh":
+			options.AutoRefresh = false
+		case arg == "--token-refresh-command" || strings.HasPrefix(arg, "--token-refresh-command="):
+			raw, nextIdx, err := optionValue(args, idx, "--token-refresh-command")
+			if err != nil {
+				return options, err
+			}
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				return options, fmt.Errorf("invalid token refresh command %q", raw)
+			}
+			options.TokenRefreshCommand = raw
+			idx = nextIdx
+		case arg == "--token-refresh-timeout" || strings.HasPrefix(arg, "--token-refresh-timeout="):
+			raw, nextIdx, err := optionValue(args, idx, "--token-refresh-timeout")
+			if err != nil {
+				return options, err
+			}
+			duration, err := parseRefreshInterval(raw, "--token-refresh-timeout")
+			if err != nil {
+				return options, err
+			}
+			options.TokenRefreshTimeout = duration
+			idx = nextIdx
 		case strings.HasPrefix(arg, "msg="):
 			limit, err := parseMessageLimit(strings.TrimPrefix(arg, "msg="))
 			if err != nil {
@@ -195,11 +224,14 @@ Options:
       --refresh-messages <d>  Poll interval for the selected conversation (seconds or Go duration, default %s)
       --refresh-tree <d>      Poll interval for the conversation tree (seconds or Go duration, default %s)
       --no-live               Disable background refresh polling
+      --no-auto-refresh       Do not refresh expired tokens via teams-token
+      --token-refresh-command <cmd> Command that runs teams-token and rewrites the token files (default: auto-discovery)
+      --token-refresh-timeout <d> Time to wait for a token refresh (seconds or Go duration, default %s)
       --doctor                Run diagnostics instead of launching the TUI
 
 Examples:
   %s --msg 20
   %s --token-dir ~/.config/fossteams --debug
   %s doctor --token-dir ~/.config/fossteams
-`, program, program, defaultLiveMessageRefreshInterval, defaultLiveConversationRefreshInterval, program, program, program)
+`, program, program, defaultLiveMessageRefreshInterval, defaultLiveConversationRefreshInterval, defaultTokenRefreshTimeout, program, program, program)
 }

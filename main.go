@@ -57,6 +57,9 @@ func main() {
 		"refresh_msg":   options.RefreshMessagesInterval.String(),
 		"refresh_tree":  options.RefreshConversationInterval.String(),
 		"token_dir":     options.TokenDir,
+		"auto_refresh":  options.AutoRefresh,
+		"refresh_cmd":   options.TokenRefreshCommand,
+		"refresh_wait":  options.TokenRefreshTimeout.String(),
 		"debug_enabled": options.LogLevel == logrus.DebugLevel,
 		"process_id":    os.Getpid(),
 	}).Info("starting teams-cli")
@@ -78,6 +81,12 @@ func main() {
 		liveRefreshDisabled:          !options.LiveRefresh,
 		liveMessageRefreshEvery:      options.RefreshMessagesInterval,
 		liveConversationRefreshEvery: options.RefreshConversationInterval,
+		tokenDir:                     options.TokenDir,
+		tokenRefresh: tokenRefreshConfig{
+			enabled: options.AutoRefresh,
+			command: options.TokenRefreshCommand,
+			timeout: options.TokenRefreshTimeout,
+		},
 	}
 	state.initRuntime(rootCtx)
 	defer state.requestStop()

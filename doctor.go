@@ -41,6 +41,7 @@ func runDoctor(out io.Writer, options AppOptions) error {
 	checks = append(checks, doctorLogFileCheck())
 	checks = append(checks, doctorRefreshConfigChecks(options)...)
 	checks = append(checks, doctorTokenChecks(options)...)
+	checks = append(checks, doctorTokenRefreshCheck(options))
 	checks = append(checks, doctorNetworkChecks()...)
 
 	failures := 0
@@ -167,6 +168,46 @@ func doctorTokenChecks(options AppOptions) []doctorCheck {
 	}
 
 	return checks
+}
+
+// doctorTokenRefreshCheck reports whether automatic token refresh is
+// configured and where the teams-token flow would be found.
+func doctorTokenRefreshCheck(options AppOptions) doctorCheck {
+	if !options.AutoRefresh {
+		return doctorCheck{
+			Status:  doctorWarn,
+			Name:    "Token Refresh",
+			Details: "automatic refresh disabled via --no-auto-refresh",
+		}
+	}
+
+	timeout := tokenRefreshConfig{timeout: options.TokenRefreshTimeout}.refreshTimeout()
+	if command := strings.TrimSpace(options.TokenRefreshCommand); command != "" {
+		return doctorCheck{
+			Status:  doctorPass,
+			Name:    "Token Refresh",
+			Details: fmt.Sprintf("custom command %q (timeout %s)", command, timeout),
+		}
+	}
+
+	invocation, err := discoverTeamsTokenInvocation()
+	if err == nil {
+		return doctorCheck{
+			Status:  doctorPass,
+			Name:    "Token Refresh",
+			Details: fmt.Sprintf("found teams-token: %s (timeout %s)", invocation.label, timeout),
+		}
+	}
+
+	if _, checkErr := electronArchiveFor(runtime.GOOS, runtime.GOARCH); checkErr != nil {
+		return doctorCheck{Status: doctorWarn, Name: "Token Refresh", Details: checkErr.Error()}
+	}
+
+	return doctorCheck{
+		Status:  doctorPass,
+		Name:    "Token Refresh",
+		Details: fmt.Sprintf("no checkout found; using embedded flow (Electron %s bootstraps on first refresh, timeout %s)", electronFlowVersion, timeout),
+	}
 }
 
 func doctorTokenCheck(tokenType, tokenDir string, required bool) doctorCheck {

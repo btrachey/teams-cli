@@ -7,6 +7,52 @@ this repository.
 
 ## [Unreleased]
 
+### Added
+
+- Message composer: send top-level messages to channels and chats, and
+  threaded replies to messages in channels (`m` opens the composer, `r`
+  replies to the highlighted message)
+- Composer status line showing send progress and errors
+- Automatic token refresh: expired `token-skype.jwt` / `token-chatsvcagg.jwt`
+  files are renewed by re-running the vendored teams-token Electron flow (the
+  `teams-token/` directory in this repository, or one found via
+  `TEAMS_TOKEN_DIR`/sibling checkouts; override with `--token-refresh-command`),
+  then the Teams client is rebuilt in place — no restart needed. Flags:
+  `--no-auto-refresh`, `--token-refresh-command <cmd>`,
+  `--token-refresh-timeout <d>`; a matching `Token Refresh` check was added to
+  `teams-cli doctor`
+- Vendored the teams-token login flow into `teams-token/` (MIT-licensed copy
+  of fossteams/teams-token, see its README/LICENSE) as the maintained origin
+  of the token fetcher
+- The flow is also embedded in the teams-cli binary (`tokenflow/`): with no
+  checkout discoverable, refresh materializes the bundled flow and
+  bootstraps the pinned Electron 12.0.2 runtime (SHA-256 verified download
+  into the user cache, once) — a copied `teams-cli` binary is fully
+  self-contained, no repo/node/yarn required
+
+### Fixed
+
+- Sending a message triggered a forced interactive sign-in even with fresh
+  tokens: top-level sends now post to the same message-service host the read
+  path uses and set the `Authentication` header explicitly (the teams-api
+  helper only attaches the skype token for its own host, so the old
+  region-probed URL went out unauthenticated and returned 401)
+- The region probe used for thread replies no longer treats a 401 as an
+  accepted region; it now requires a 2xx answer before caching a region
+- A failed send keeps the composer draft (previously the text was wiped
+  before the request was made), and a successful send clears the stale
+  thread-reply context
+- Messages sent from the CLI were invisible in the chat window (and any
+  name-keyed reader): the POST body omitted `imdisplayname`, so the service
+  stored an empty sender name. Sends now include the signed-in user's
+  display name, and nameless messages authored by the signed-in user render
+  under that name instead of being skipped
+- System activity rows (call logs, thread membership events) can no longer
+  leak into the chat window as raw call/meeting XML, even when the
+  signed-in user started the call and the row carries no sender name
+- Client message id generation could overflow `int64` and produce negative
+  ids; ids are now drawn from a range whose addition stays in bounds
+
 ## [v0.2.3] - 2026-04-02
 
 ### Added

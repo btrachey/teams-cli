@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	teams_api "github.com/fossteams/teams-api"
+	"github.com/fossteams/teams-api/pkg/csa"
 	"github.com/rivo/tview"
 	"github.com/sirupsen/logrus"
 )
@@ -42,20 +44,45 @@ type AppState struct {
 	activeLoadCancel             context.CancelFunc
 	activeLoadCancelSeq          uint64
 	shutdownOnce                 sync.Once
+
+	tokenDir                 string
+	tokenRefresh             tokenRefreshConfig
+	tokenRefreshMu           sync.Mutex
+	lastTokenRefreshAt       time.Time
+	lastTokenRefreshFailedAt time.Time
+	refreshTokensOverride    func(ctx context.Context) error
+	newTeamsClientOverride   func() (*teams_api.TeamsClient, error)
+	skypeAuthHeaderOverride  func() (string, error)
+
+	composerReply      replyContext
+	conversationLoaded bool
+	displayedMessages  []csa.ChatMessage
+	messageRegion      string
+	regionMu           sync.Mutex
+	composerInput      *tview.InputField
+	sendInFlight       uint32
 }
 
 const (
-	loadingBarWidth                        = 18
+	loadingBarWidth = 18
+
 	loadingPulseWidth                      = 5
 	loadingTickInterval                    = 120 * time.Millisecond
 	helpBarHeight                          = 1
+	composerHeight                         = 3
 	defaultLiveMessageRefreshInterval      = 5 * time.Second
 	defaultLiveConversationRefreshInterval = 15 * time.Second
 	messageRequestTimeout                  = 5 * time.Second
 	messageFetchMaxAttempts                = 3
+	messageSendTimeout                     = 15 * time.Second
 	messageFetchRetryBaseDelay             = 250 * time.Millisecond
 	messageFetchRetryMaxDelay              = time.Second
 )
+
+type replyContext struct {
+	target    ConversationTarget
+	messageID string
+}
 
 type treeViewState struct {
 	expandedPaths    map[string]struct{}
@@ -238,4 +265,52 @@ func (s *AppState) conversationSyncStatus(syncedAt time.Time) string {
 	}
 
 	return "loaded " + syncedAt.Format("15:04:05")
+}
+
+// resolveMessageLocation maps a conversation ID to the team ID needed by the
+// CSA v2 thread-reply endpoints. Channel IDs are unique across the loaded
+// conversation data.
+func (s *TeamsState) resolveMessageLocation(channelID string) (string, bool) {
+	channel, ok := s.channelById[channelID]
+	if !ok || channel.Channel == nil || channel.parent == nil {
+		return "", false
+	}
+
+	return channel.parent.Id, true
+}
+
+func (s *AppState) isChannelConversation(conversationID string) bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+
+	_, ok := s.channelById[conversationID]
+	return ok
+}
+
+func (s *AppState) currentMessageList() *tview.List {
+	list, ok := s.components[ViChat].(*tview.List)
+	if !ok {
+		return nil
+	}
+
+	return list
+}
+
+func (s *AppState) messageAtCurrentListIndex() (*csa.ChatMessage, bool) {
+	list := s.currentMessageList()
+	if list == nil {
+		return nil, false
+	}
+
+	if list.GetItemCount() != len(s.displayedMessages) {
+		// The list holds a hint or error placeholder, not real messages.
+		return nil, false
+	}
+
+	index := list.GetCurrentItem()
+	if index < 0 || index >= len(s.displayedMessages) {
+		return nil, false
+	}
+
+	return &s.displayedMessages[index], true
 }

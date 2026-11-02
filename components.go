@@ -1,9 +1,10 @@
 package main
 
 const (
-	TvLoginStatus = "tvLoginStatus"
-	TvError       = "tvErrTitle"
-	TvHelp        = "tvHelp"
+	TvLoginStatus    = "tvLoginStatus"
+	TvError          = "tvErrTitle"
+	TvHelp           = "tvHelp"
+	TvComposerStatus = "tvComposerStatus"
 )
 
 // Trees
@@ -14,8 +15,9 @@ const (
 // Generic Views
 
 const (
-	ViChat = "viChat"
-	MoHelp = "moHelp"
+	ViChat     = "viChat"
+	ViComposer = "viComposer"
+	MoHelp     = "moHelp"
 )
 
 // Pages

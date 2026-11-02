@@ -140,6 +140,9 @@ func (s *AppState) refreshConversationTree() {
 	}
 
 	data, err := s.fetchConversationData()
+	if err != nil && isAuthFailure(err) && s.maybeRefreshTokens(s.appContext(), err) {
+		data, err = s.fetchConversationData()
+	}
 	if err != nil {
 		s.appLogger().WithError(err).Warn("live conversation refresh failed")
 		return
@@ -302,7 +305,7 @@ func (s *AppState) waitForMessageFetchRetry(ctx context.Context, attempt int) er
 }
 
 func (s *AppState) fetchMessages(ctx context.Context, target ConversationTarget) ([]csa.ChatMessage, error) {
-	if s.teamsClient == nil {
+	if s.client() == nil {
 		return nil, fmt.Errorf("teams client is nil")
 	}
 
@@ -329,7 +332,9 @@ func (s *AppState) fetchMessages(ctx context.Context, target ConversationTarget)
 	}).Debug("fetching conversation messages")
 
 	var lastErr error
-	for attempt := 1; attempt <= messageFetchMaxAttempts; attempt++ {
+	authRetryUsed := false
+	maxAttempts := messageFetchMaxAttempts
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -345,14 +350,21 @@ func (s *AppState) fetchMessages(ctx context.Context, target ConversationTarget)
 		}
 
 		lastErr = err
-		if attempt == messageFetchMaxAttempts || !shouldRetryMessageFetch(err) {
+		if !authRetryUsed && isAuthFailure(err) && s.maybeRefreshTokens(ctx, err) {
+			// One refresh-and-retry per fetch: extend the budget and skip
+			// the backoff so the retry hits the service immediately.
+			authRetryUsed = true
+			maxAttempts++
+			continue
+		}
+		if attempt == maxAttempts || !shouldRetryMessageFetch(err) {
 			return nil, err
 		}
 
 		s.appLogger().WithFields(logrus.Fields{
 			"conversation_id": target.ID,
 			"attempt":         attempt,
-			"max_attempts":    messageFetchMaxAttempts,
+			"max_attempts":    maxAttempts,
 			"backoff":         messageFetchBackoff(attempt).String(),
 		}).WithError(err).Warn("retrying message fetch")
 		if err := s.waitForMessageFetchRetry(ctx, attempt); err != nil {
@@ -364,7 +376,12 @@ func (s *AppState) fetchMessages(ctx context.Context, target ConversationTarget)
 }
 
 func (s *AppState) fetchMessagesOnce(ctx context.Context, endpoint string) ([]csa.ChatMessage, error) {
-	req, err := s.teamsClient.ChatSvc().AuthenticatedRequest(http.MethodGet, endpoint, nil)
+	teamsClient := s.client()
+	if teamsClient == nil {
+		return nil, fmt.Errorf("teams client is nil")
+	}
+
+	req, err := teamsClient.ChatSvc().AuthenticatedRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

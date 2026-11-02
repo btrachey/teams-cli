@@ -7,10 +7,12 @@ import (
 	"github.com/fossteams/teams-api/pkg/models"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 type TeamsState struct {
+	clientMu    sync.RWMutex
 	teamsClient *teams_api.TeamsClient
 
 	conversations      *csa.ConversationResponse
@@ -19,6 +21,21 @@ type TeamsState struct {
 	pinnedChannelOrder map[string]int
 	channelById        map[string]Channel
 	teamById           map[string]*csa.Team
+}
+
+// client returns the current teams-api client. It may be swapped at runtime
+// after an automatic token refresh, so callers must capture it per request.
+func (s *TeamsState) client() *teams_api.TeamsClient {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+
+	return s.teamsClient
+}
+
+func (s *TeamsState) setTeamsClient(client *teams_api.TeamsClient) {
+	s.clientMu.Lock()
+	defer s.clientMu.Unlock()
+	s.teamsClient = client
 }
 
 type Channel struct {
@@ -60,16 +77,17 @@ func (s *TeamsState) init(client *teams_api.TeamsClient) error {
 }
 
 func (s *TeamsState) fetchConversationData() (*conversationData, error) {
-	if s.teamsClient == nil {
+	client := s.client()
+	if client == nil {
 		return nil, fmt.Errorf("teams client is nil")
 	}
 
-	pinnedChannels, err := s.teamsClient.GetPinnedChannels()
+	pinnedChannels, err := client.GetPinnedChannels()
 	if err != nil {
 		return nil, fmt.Errorf("unable to get pinned channels: %v", err)
 	}
 
-	conversations, err := s.teamsClient.GetConversations()
+	conversations, err := client.GetConversations()
 	if err != nil {
 		return nil, fmt.Errorf("unable to get conversations: %v", err)
 	}

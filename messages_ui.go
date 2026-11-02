@@ -46,6 +46,32 @@ func messagesSignature(messages []csa.ChatMessage) string {
 	return fmt.Sprintf("%x", hasher.Sum64())
 }
 
+// isSelfAuthoredMessage reports whether a message was sent by the signed-in
+// user. The message service stores an empty sender name for posts that
+// omitted imdisplayname (including this app's own earlier sends), so the
+// author contact encoded in the from-URL is the only reliable signal.
+func (s *AppState) isSelfAuthoredMessage(message csa.ChatMessage) bool {
+	selfMri := s.selfMri()
+	if selfMri == "" {
+		return false
+	}
+
+	return strings.HasSuffix(message.From, "/"+selfMri)
+}
+
+// isSystemActivityType reports whether a message type is a system-generated
+// activity row rather than chat text. The "System" prefix is deliberate, not
+// drift: the live wire record for "user joined a meeting" carries messagetype
+// exactly "System" with an empty sender name, so it is only hidden by this
+// guard. A hypothetical *named* System row would now also hide; it would have
+// rendered under the old name-based filter, but no such row exists in the
+// observed traffic and call/meeting XML is never chat text.
+func isSystemActivityType(messageType string) bool {
+	return strings.HasPrefix(messageType, "ThreadActivity/") ||
+		strings.HasPrefix(messageType, "Event/") ||
+		strings.HasPrefix(messageType, "System")
+}
+
 func (s *AppState) renderConversationMessages(target ConversationTarget, messages []csa.ChatMessage, syncedAt time.Time, preserveSelection bool) {
 	chatList := s.components[ViChat].(*tview.List)
 	previousCount := chatList.GetItemCount()
@@ -62,28 +88,56 @@ func (s *AppState) renderConversationMessages(target ConversationTarget, message
 		SetTitleAlign(tview.AlignCenter)
 	s.chatPaneFocusable = true
 
+	displayed := make([]csa.ChatMessage, 0, len(messages))
 	for _, message := range messages {
-		if message.ImDisplayName == "" {
+		// System activity rows (thread membership events, call logs) are
+		// not chat text and stay hidden unconditionally: a call started
+		// by the signed-in user stores the user's own contact URL in
+		// from with no display name, so the author gate below alone
+		// would surface call/meeting XML as chat text.
+		if isSystemActivityType(message.MessageType) {
 			continue
 		}
-		chatList.AddItem(textMessage(message.Content), message.ImDisplayName, 0, nil)
+
+		author := strings.TrimSpace(message.ImDisplayName)
+		if author == "" {
+			// Remaining nameless messages are this app's own sends that
+			// omitted imdisplayname (stored nameless server-side).
+			// Render only those, under the signed-in user's display
+			// name; nameless messages from anyone else stay hidden.
+			if !s.isSelfAuthoredMessage(message) {
+				continue
+			}
+			author = strings.TrimSpace(s.selfDisplayName())
+			if author == "" {
+				author = "You"
+			}
+		}
+
+		mainText, secondaryText := messageListItem(author, message.Content)
+		chatList.AddItem(mainText, secondaryText, 0, nil)
+		displayed = append(displayed, message)
 	}
+
+	s.displayedMessages = displayed
+	s.conversationLoaded = true
 
 	if chatList.GetItemCount() == 0 {
 		chatList.AddItem("No recent messages found", fmt.Sprintf("Loaded the latest %d messages for this conversation.", s.messageLimit), 0, nil)
 	}
 
-	if !preserveSelection || chatList.GetItemCount() == 0 {
-		return
-	}
-
+	// Always land on the newest message (last row; messages are sorted
+	// ascending by ComposeTime) and tview's Draw scrolls it into view.
+	// Refreshes keep the user's place while scrolling history, unless they
+	// were already pinned at the tail — then keep following new messages.
+	last := chatList.GetItemCount() - 1
 	switch {
-	case followTail:
-		chatList.SetCurrentItem(chatList.GetItemCount() - 1)
-	case previousIndex < chatList.GetItemCount():
+	case !preserveSelection || previousCount == 0, followTail:
+		chatList.SetCurrentItem(last)
+	case previousIndex <= last:
 		chatList.SetCurrentItem(previousIndex)
 	default:
-		chatList.SetCurrentItem(chatList.GetItemCount() - 1)
+		chatList.SetCurrentItem(last)
 	}
 }
 
@@ -107,6 +161,8 @@ func (s *AppState) renderConversationLoadError(target ConversationTarget, err er
 		return
 	}
 
+	s.displayedMessages = nil
+	s.conversationLoaded = false
 	mainText, secondaryText := conversationLoadErrorText(err)
 	chatList.Clear()
 	chatList.SetTitle(conversationPaneTitle(target, time.Time{}, "load failed")).

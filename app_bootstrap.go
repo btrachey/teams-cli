@@ -3,8 +3,8 @@ package main
 import (
 	"strings"
 	"sync/atomic"
+	"time"
 
-	teams_api "github.com/fossteams/teams-api"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/sirupsen/logrus"
@@ -49,6 +49,22 @@ func (s *AppState) createMainView() tview.Primitive {
 	chatView.SetTitleAlign(tview.AlignCenter)
 	chatView.SetSelectedFocusOnly(true)
 
+	composer := tview.NewInputField()
+	composer.SetLabel("")
+	composer.SetLabelWidth(0)
+	composer.SetPlaceholder("Send a message…")
+	composer.SetBorder(true)
+	composer.SetBackgroundColor(tcell.ColorBlack)
+	s.components[ViComposer] = composer
+	s.composerInput = composer
+
+	composerStatus := tview.NewTextView()
+	composerStatus.SetDynamicColors(false)
+	composerStatus.SetWrap(true)
+	composerStatus.SetTextAlign(tview.AlignLeft)
+	composerStatus.SetBackgroundColor(tcell.ColorBlack)
+	s.components[TvComposerStatus] = composerStatus
+
 	helpView := tview.NewTextView()
 	helpView.SetDynamicColors(true)
 	helpView.SetWrap(true)
@@ -60,9 +76,15 @@ func (s *AppState) createMainView() tview.Primitive {
 	s.components[ViChat] = chatView
 	s.components[TvHelp] = helpView
 
+	rightFlex := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(chatView, 0, 1, false).
+		AddItem(composer, composerHeight, 0, false).
+		AddItem(composerStatus, 1, 0, false)
+
 	contentFlex := tview.NewFlex().
 		AddItem(treeView, 0, 1, false).
-		AddItem(chatView, 0, 2, false)
+		AddItem(rightFlex, 0, 2, false)
 
 	treeView.SetDoneFunc(func(key tcell.Key) {
 		switch key {
@@ -77,6 +99,17 @@ func (s *AppState) createMainView() tview.Primitive {
 		s.focusComponent(TrChat)
 	})
 	chatView.SetInputCapture(s.chatKeyHandler())
+
+	composer.SetInputCapture(s.composerKeyHandler())
+	composer.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter {
+			s.sendComposerMessage()
+			s.focusComponent(ViChat)
+			return
+		}
+
+		s.focusComponent(ViChat)
+	})
 
 	return tview.NewFlex().
 		SetDirection(tview.FlexRow).
@@ -104,16 +137,40 @@ func (s *AppState) createLoginPage() tview.Primitive {
 		AddItem(nil, 0, 1, false)
 }
 
+// setLoginStatus updates the login page text so long-running startup work
+// (like an automatic token refresh) is visible to the user.
+func (s *AppState) setLoginStatus(message string) {
+	s.app.QueueUpdateDraw(func() {
+		if status, ok := s.components[TvLoginStatus].(*tview.TextView); ok {
+			status.SetText(message)
+		}
+	})
+}
+
 func (s *AppState) start() {
-	var err error
-	s.teamsClient, err = teams_api.New()
+	if s.tokenFilesNeedRefresh(time.Now()) {
+		s.appLogger().Info("stored Teams tokens are expired or missing expiry; attempting automatic refresh via teams-token")
+		s.setLoginStatus("Your stored Teams tokens are expired.\nRefreshing via teams-token…")
+		if !s.maybeRefreshTokens(s.appContext(), nil) {
+			s.appLogger().Warn("automatic token refresh did not restore usable tokens")
+		}
+	}
+
+	client, err := s.newTeamsClient()
+	if err != nil && isAuthFailure(err) && s.maybeRefreshTokens(s.appContext(), err) {
+		client, err = s.newTeamsClient()
+	}
 	if err != nil {
 		s.appLogger().WithError(err).Error("unable to initialize teams client")
 		s.showError(err)
 		return
 	}
+	s.setTeamsClient(client)
 
-	err = s.TeamsState.init(s.teamsClient)
+	err = s.TeamsState.init(client)
+	if err != nil && isAuthFailure(err) && s.maybeRefreshTokens(s.appContext(), err) {
+		err = s.TeamsState.init(s.client())
+	}
 	if err != nil {
 		s.appLogger().WithError(err).Error("unable to initialize teams state")
 		s.showError(err)

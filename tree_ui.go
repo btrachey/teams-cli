@@ -171,7 +171,8 @@ Tree   Up/Down move   Right/l open
        Tab msgs
 
 Msgs   Up/Down move   PgUp/Dn page
-       Home/End jump   Left/h/Esc/Tab back
+       Home/End jump   m msg   r reply
+       Left/h/Esc/Tab back
 
 Live   Background refresh disabled
 
@@ -185,7 +186,8 @@ Tree   Up/Down move   Right/l open
        Tab msgs
 
 Msgs   Up/Down move   PgUp/Dn page
-       Home/End jump   Left/h/Esc/Tab back
+       Home/End jump   m msg   r reply
+       Left/h/Esc/Tab back
 
 Live   Selected conversation refreshes every %s
        Conversation tree refreshes every %s
@@ -197,7 +199,9 @@ Live   Selected conversation refreshes every %s
 func helpBarText(focusedComponent string) string {
 	switch focusedComponent {
 	case ViChat:
-		return "[::b]Msgs[::-] Up/Down  PgUp/Dn page  Home/End jump  Left/Esc/Tab back  ?  q"
+		return "[::b]Msgs[::-] Up/Down  PgUp/Dn page  Home/End jump  m msg  r reply  Left/Esc/Tab back  ?  q"
+	case ViComposer:
+		return "[::b]Composer[::-] Enter send  Bksp cancel reply  Tab back"
 	default:
 		return "[::b]Tree[::-] Up/Down  Right open  Left/Esc back  Enter read  Tab msgs  ?  q"
 	}
@@ -207,6 +211,12 @@ func (s *AppState) globalKeyHandler(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlC {
 		s.requestStop()
 		return nil
+	}
+
+	// While the composer is focused every rune is message text; the global
+	// shortcuts ('q' quit, '?' help) must not swallow it.
+	if s.focusedComponent == ViComposer {
+		return event
 	}
 
 	if event.Key() == tcell.KeyRune {
@@ -290,6 +300,7 @@ func (s *AppState) updateHelpBar() {
 func (s *AppState) updatePanelFocus() {
 	treeView, treeOK := s.components[TrChat].(*tview.TreeView)
 	chatView, chatOK := s.components[ViChat].(*tview.List)
+	composer, composerOK := s.components[ViComposer].(*tview.InputField)
 	if !treeOK || !chatOK {
 		return
 	}
@@ -298,10 +309,17 @@ func (s *AppState) updatePanelFocus() {
 	inactiveColor := tview.Styles.BorderColor
 	treeView.SetBorderColor(inactiveColor)
 	chatView.SetBorderColor(inactiveColor)
+	if composerOK {
+		composer.SetBorderColor(inactiveColor)
+	}
 
 	switch s.focusedComponent {
 	case ViChat:
 		chatView.SetBorderColor(activeColor)
+	case ViComposer:
+		if composerOK {
+			composer.SetBorderColor(activeColor)
+		}
 	default:
 		treeView.SetBorderColor(activeColor)
 	}
@@ -345,9 +363,18 @@ func (s *AppState) chatKeyHandler() func(event *tcell.EventKey) *tcell.EventKey 
 			return nil
 		}
 
-		if event.Key() == tcell.KeyRune && event.Rune() == 'h' {
-			s.focusComponent(TrChat)
-			return nil
+		if event.Key() == tcell.KeyRune {
+			switch event.Rune() {
+			case 'h':
+				s.focusComponent(TrChat)
+				return nil
+			case 'm':
+				s.focusComposerForMessage()
+				return nil
+			case 'r':
+				s.beginReplyTo()
+				return nil
+			}
 		}
 
 		return event
@@ -486,6 +513,9 @@ func (s *AppState) showConversationHint(node *tview.TreeNode) {
 	atomic.StoreUint64(&s.activeLoadSeq, 0)
 	s.chatPaneFocusable = false
 	s.clearCurrentConversation()
+	s.displayedMessages = nil
+	s.conversationLoaded = false
+	s.resetComposer()
 
 	mainText, secondaryText := conversationHintText(node)
 	chatList := s.components[ViChat].(*tview.List)
@@ -512,6 +542,7 @@ func (s *AppState) loadConversationForNode(node *tview.TreeNode) {
 	}
 	s.setCurrentConversation(target)
 	s.cancelActiveLoad()
+	s.resetComposer()
 
 	chatList := s.components[ViChat].(*tview.List)
 	chatList.Clear()

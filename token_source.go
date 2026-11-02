@@ -33,7 +33,14 @@ const (
 	tokenSourceFile tokenSource = "file"
 )
 
+// defaultTokenDir returns the directory teams-token writes its JWT files
+// to. FOSSTEAMS_TOKEN_DIR overrides the location (it also redirects the
+// vendored token flow, which reads the same variable).
 func defaultTokenDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("FOSSTEAMS_TOKEN_DIR")); dir != "" {
+		return dir, nil
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot retrieve user home directory")

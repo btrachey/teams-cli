@@ -29,6 +29,12 @@ func TestParseAppOptionsDefaults(t *testing.T) {
 	if options.RefreshConversationInterval != defaultLiveConversationRefreshInterval {
 		t.Fatalf("expected default tree refresh interval %s, got %s", defaultLiveConversationRefreshInterval, options.RefreshConversationInterval)
 	}
+	if !options.AutoRefresh {
+		t.Fatal("expected automatic token refresh to be enabled by default")
+	}
+	if options.TokenRefreshTimeout != defaultTokenRefreshTimeout {
+		t.Fatalf("expected default token refresh timeout %s, got %s", defaultTokenRefreshTimeout, options.TokenRefreshTimeout)
+	}
 }
 
 func TestParseAppOptionsExtendedFlags(t *testing.T) {
@@ -183,7 +189,7 @@ func TestParseAppOptionsRejectsUnknownArgument(t *testing.T) {
 func TestUsageTextIncludesDiagnosticsAndRefreshFlags(t *testing.T) {
 	text := usageText("teams-cli")
 
-	for _, needle := range []string{"--doctor", "--no-live", "--refresh-messages", "--refresh-tree"} {
+	for _, needle := range []string{"--doctor", "--no-live", "--refresh-messages", "--refresh-tree", "--no-auto-refresh", "--token-refresh-command", "--token-refresh-timeout"} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("expected usage text to mention %s", needle)
 		}

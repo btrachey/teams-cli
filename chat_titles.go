@@ -7,10 +7,26 @@ import (
 	"strings"
 
 	"github.com/fossteams/teams-api/pkg/csa"
+	"github.com/rivo/tview"
 	"golang.org/x/net/html"
 )
 
-func textMessage(input string) string {
+// messageListItem renders one chat message as a two-line list item: the
+// sender's name (bold) on the top line, the message body beneath it. tview
+// List items are exactly two rows, so paragraph breaks in the body are
+// joined with spaces.
+func messageListItem(author, content string) (string, string) {
+	main := "[::b]" + tview.Escape(strings.TrimSpace(author)) + "[-::]"
+
+	body := strings.TrimRight(textBody(content), "\n")
+	body = strings.TrimSpace(strings.ReplaceAll(body, "\n", " "))
+
+	// "[white]" keeps the body in the same color it had as the main text;
+	// tview's default secondary color is green.
+	return main, "[white]" + body
+}
+
+func textBody(input string) string {
 	output := ""
 	z := html.NewTokenizer(bytes.NewBuffer([]byte(input)))
 	for {
@@ -25,10 +41,7 @@ func textMessage(input string) string {
 			if strings.TrimSpace(text) == "" {
 				continue
 			}
-			output += fmt.Sprintf("\t%v\n", text)
-		}
-		if tt == html.ErrorToken {
-			break
+			output += fmt.Sprintf("\t%v\n", tview.Escape(text))
 		}
 	}
 

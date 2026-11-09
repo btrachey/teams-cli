@@ -12,7 +12,6 @@ import (
 
 	"github.com/fossteams/teams-api/pkg/csa"
 	"github.com/fossteams/teams-api/pkg/models"
-	"github.com/rivo/tview"
 )
 
 func TestWrapMessageContentEscapesHTMLAndWrapsParagraph(t *testing.T) {
@@ -149,8 +148,12 @@ func TestIsChannelConversation(t *testing.T) {
 }
 
 func TestHelpBarTextForComposer(t *testing.T) {
-	text := helpBarText(ViComposer)
-	if !strings.Contains(text, "Enter send") {
+	state := newUITestState()
+	state.ui.focus = PaneComposer
+	model := newChatModel(state)
+	model.help.Width = 120
+	text := strings.ToLower(plain(model.help.View(model.keyBindings())))
+	if !strings.Contains(text, "send") {
 		t.Fatalf("expected composer help to mention send, got %q", text)
 	}
 	// The global 'q'/'?' shortcuts are suppressed while the composer is
@@ -357,84 +360,71 @@ func TestProbeMessageRegionFailsWhenNoRegionAuthorizes(t *testing.T) {
 	}
 }
 
-func TestApplySendOutcomePreservesDraftOnFailure(t *testing.T) {
-	composer := tview.NewInputField()
-	status := tview.NewTextView()
+func sendOutcomeState(t *testing.T) (*AppState, chatModel) {
+	t.Helper()
 	state := &AppState{
-		logger:        discardLogger,
-		composerInput: composer,
-		components:    map[string]tview.Primitive{TvComposerStatus: status},
+		logger:       discardLogger,
+		messageLimit: defaultMessageLimit,
 	}
+	state.initRuntime(context.Background())
+	return state, newChatModel(state)
+}
+
+func TestSendResultPreservesDraftOnFailure(t *testing.T) {
+	state, model := sendOutcomeState(t)
 	target := ConversationTarget{ID: "19:abc@thread.v2"}
 	state.setCurrentConversation(target)
 	state.composerReply = replyContext{target: target, messageID: "msg-1"}
+	state.ui.composerText = "my draft"
 
-	composer.SetText("my draft")
+	updated, _ := model.Update(sendResultMsg{target: target, err: errors.New("message send failed: 500")})
+	got := updated.(chatModel).state
 
-	if state.applySendOutcome(target, errors.New("message send failed: 500")) {
-		t.Fatal("expected applySendOutcome to report failure")
+	if got.ui.composerText != "my draft" {
+		t.Fatalf("expected the draft to survive a failed send, got %q", got.ui.composerText)
 	}
-
-	if composer.GetText() != "my draft" {
-		t.Fatalf("expected the draft to survive a failed send, got %q", composer.GetText())
-	}
-	if state.composerReply.messageID != "msg-1" {
+	if got.composerReply.messageID != "msg-1" {
 		t.Fatal("expected the reply context to survive a failed send")
 	}
-	if !strings.Contains(status.GetText(false), "Send failed") {
-		t.Fatalf("expected a failure status, got %q", status.GetText(false))
+	if !strings.Contains(got.ui.composerStatus, "Send failed") {
+		t.Fatalf("expected a failure status, got %q", got.ui.composerStatus)
 	}
 }
 
-func TestApplySendOutcomeClearsDraftAndReplyOnSuccess(t *testing.T) {
-	composer := tview.NewInputField()
-	status := tview.NewTextView()
-	state := &AppState{
-		logger:        discardLogger,
-		composerInput: composer,
-		components:    map[string]tview.Primitive{TvComposerStatus: status},
-	}
+func TestSendResultClearsDraftAndReplyOnSuccess(t *testing.T) {
+	state, model := sendOutcomeState(t)
 	target := ConversationTarget{ID: "19:abc@thread.v2"}
 	state.setCurrentConversation(target)
 	state.composerReply = replyContext{target: target, messageID: "msg-1"}
+	state.ui.composerText = "my draft"
 
-	composer.SetText("my draft")
+	updated, _ := model.Update(sendResultMsg{target: target, err: nil})
+	got := updated.(chatModel).state
 
-	if !state.applySendOutcome(target, nil) {
-		t.Fatal("expected applySendOutcome to report success")
+	if got.ui.composerText != "" {
+		t.Fatalf("expected the draft to clear after success, got %q", got.ui.composerText)
 	}
-
-	if composer.GetText() != "" {
-		t.Fatalf("expected the draft to clear after success, got %q", composer.GetText())
-	}
-	if state.composerReply.messageID != "" {
+	if got.composerReply.messageID != "" {
 		t.Fatal("expected the reply context to clear after success")
 	}
-	if !strings.Contains(status.GetText(false), "Sent") {
-		t.Fatalf("expected a sent status, got %q", status.GetText(false))
+	if !strings.Contains(got.ui.composerStatus, "Sent") {
+		t.Fatalf("expected a sent status, got %q", got.ui.composerStatus)
 	}
 }
 
-func TestApplySendOutcomeIgnoresStaleConversation(t *testing.T) {
-	composer := tview.NewInputField()
-	status := tview.NewTextView()
-	state := &AppState{
-		logger:        discardLogger,
-		composerInput: composer,
-		components:    map[string]tview.Primitive{TvComposerStatus: status},
-	}
+func TestSendResultIgnoresStaleConversation(t *testing.T) {
+	state, model := sendOutcomeState(t)
 	target := ConversationTarget{ID: "19:old@thread.v2"}
 	state.setCurrentConversation(ConversationTarget{ID: "19:new@thread.v2"})
+	state.ui.composerText = "draft for old conversation"
 
-	composer.SetText("draft for old conversation")
+	updated, _ := model.Update(sendResultMsg{target: target, err: nil})
+	got := updated.(chatModel).state
 
-	if state.applySendOutcome(target, nil) {
-		t.Fatal("expected applySendOutcome to ignore a conversation that is no longer open")
+	if got.ui.composerText != "draft for old conversation" {
+		t.Fatalf("expected the other conversation's draft to stay untouched, got %q", got.ui.composerText)
 	}
-	if composer.GetText() != "draft for old conversation" {
-		t.Fatalf("expected the other conversation's draft to stay untouched, got %q", composer.GetText())
-	}
-	if status.GetText(false) != "" {
-		t.Fatalf("expected no status change, got %q", status.GetText(false))
+	if got.ui.composerStatus != "" {
+		t.Fatalf("expected no status change, got %q", got.ui.composerStatus)
 	}
 }

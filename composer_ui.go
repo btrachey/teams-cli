@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const composerStatusMaxLength = 200
@@ -23,48 +23,16 @@ func (s *AppState) replyToAuthor() string {
 
 	for index := range s.displayedMessages {
 		if s.displayedMessages[index].Id == reply.messageID {
-			return s.displayedMessages[index].ImDisplayName
+			return sanitizeText(s.displayedMessages[index].ImDisplayName)
 		}
 	}
 
 	return ""
 }
 
-func (s *AppState) updateComposerLabel() {
-	composer := s.composerInput
-	if composer == nil {
-		return
-	}
-
-	if reply := s.composerReply; reply.messageID != "" {
-		author := s.replyToAuthor()
-		if author == "" {
-			author = "message"
-		}
-
-		composer.SetLabel("Reply to " + author)
-		return
-	}
-
-	composer.SetLabel("")
-}
-
-func (s *AppState) composerStatusText(message string) string {
-	if len(message) <= composerStatusMaxLength {
-		return message
-	}
-
-	return message[:composerStatusMaxLength-1] + "…"
-}
-
-func (s *AppState) setComposerStatus(status string, color tcell.Color) {
-	textView, ok := s.components[TvComposerStatus].(*tview.TextView)
-	if !ok {
-		return
-	}
-
-	textView.SetTextColor(color)
-	textView.SetText(s.composerStatusText(status))
+func (s *AppState) setComposerStatus(status string, kind int) {
+	s.ui.composerStatus = truncateComposerStatus(status)
+	s.ui.composerStatusKind = kind
 }
 
 // focusComposerForMessage opens the composer in plain top-level send mode for
@@ -75,14 +43,14 @@ func (s *AppState) focusComposerForMessage() {
 	}
 
 	s.clearComposerReply()
-	s.focusComponent(ViComposer)
+	s.focusComponent(PaneComposer)
 }
 
 // beginReplyTo enters reply mode for the message currently highlighted in the
-// messages list. Thread replies only exist for channels, so chats fall back
+// messages pane. Thread replies only exist for channels, so chats fall back
 // to a plain top-level send with the composer focused.
 func (s *AppState) beginReplyTo() {
-	message, ok := s.messageAtCurrentListIndex()
+	message, ok := s.messageAtCurrentIndex()
 	if !ok {
 		return
 	}
@@ -96,8 +64,7 @@ func (s *AppState) beginReplyTo() {
 		s.composerReply = replyContext{target: target, messageID: message.Id}
 	}
 
-	s.focusComponent(ViComposer)
-	s.updateComposerLabel()
+	s.focusComponent(PaneComposer)
 }
 
 // clearComposerReply cancels any pending thread reply, leaving the composer in
@@ -108,39 +75,29 @@ func (s *AppState) clearComposerReply() {
 	}
 
 	s.composerReply = replyContext{}
-	s.updateComposerLabel()
 }
 
 // resetComposer clears the composer for a new conversation: text, reply
 // context, and status.
 func (s *AppState) resetComposer() {
 	s.composerReply = replyContext{}
-	if composer := s.composerInput; composer != nil {
-		composer.SetText("")
-	}
-	s.updateComposerLabel()
-	s.setComposerStatus("", tcell.ColorDefault)
+	s.ui.composerText = ""
+	s.setComposerStatus("", statusNone)
 }
 
 // sendComposerMessage submits the composer text as a top-level message, or as
 // a thread reply when the composer is in reply mode. The HTTP round trip
-// happens off the UI thread so the interface stays responsive while the
-// request is in flight.
+// happens off the UI thread; the outcome arrives as a sendResultMsg.
 func (s *AppState) sendComposerMessage() {
-	composer := s.composerInput
-	if composer == nil {
-		return
-	}
-
-	text := strings.TrimSpace(composer.GetText())
+	text := strings.TrimSpace(s.ui.composerText)
 	if text == "" {
-		s.setComposerStatus("Nothing to send: the composer is empty.", tcell.ColorYellow)
+		s.setComposerStatus("Nothing to send: the composer is empty.", statusInfo)
 		return
 	}
 
 	target, ok, _, _ := s.currentConversationSnapshot()
 	if !ok || target.ID == "" {
-		s.setComposerStatus("Open a channel or chat first (select it in the tree).", tcell.ColorYellow)
+		s.setComposerStatus("Open a channel or chat first (select it in the tree).", statusInfo)
 		return
 	}
 
@@ -149,7 +106,7 @@ func (s *AppState) sendComposerMessage() {
 	}
 
 	reply := s.composerReply
-	s.setComposerStatus("Sending…", tcell.ColorYellow)
+	s.setComposerStatus("Sending…", statusInfo)
 	go func() {
 		defer atomic.StoreUint32(&s.sendInFlight, 0)
 
@@ -169,49 +126,18 @@ func (s *AppState) sendComposerMessage() {
 			err = sendMessage(retryContext)
 			retryCancel()
 		}
-		s.app.QueueUpdateDraw(func() {
-			if !s.applySendOutcome(target, err) {
-				return
-			}
-			s.reloadCurrentConversation()
-		})
+
+		s.sendUIMsg(sendResultMsg{target: target, err: err})
 	}()
 }
 
-// applySendOutcome updates the composer after a send attempt: on failure the
-// draft stays intact so the user can retry; on success the draft and any
-// thread-reply context are cleared. It reports whether the send succeeded
-// and the conversation should be reloaded.
-func (s *AppState) applySendOutcome(target ConversationTarget, err error) bool {
-	select {
-	case <-s.appContext().Done():
-		return false
-	default:
-	}
-
-	if !s.currentConversationIs(target.ID) {
-		return false
-	}
-
-	if err != nil {
-		s.setComposerStatus("Send failed: "+err.Error(), tcell.ColorRed)
-		return false
-	}
-
-	if composer := s.composerInput; composer != nil {
-		composer.SetText("")
-	}
-	s.clearComposerReply()
-	s.setComposerStatus("Sent.", tcell.ColorGreen)
-	return true
-}
-
-// reloadCurrentConversation refetches the active conversation so the message
-// just sent (and any server-assigned ID) shows up in the list.
-func (s *AppState) reloadCurrentConversation() {
+// reloadConversationCmd refetches the active conversation so the message
+// just sent (and any server-assigned ID) shows up in the list. Selection is
+// not preserved: the user lands on the newest message.
+func (s *AppState) reloadConversationCmd() tea.Cmd {
 	target, ok, _, _ := s.currentConversationSnapshot()
 	if !ok {
-		return
+		return nil
 	}
 
 	s.cancelActiveLoad()
@@ -220,31 +146,28 @@ func (s *AppState) reloadCurrentConversation() {
 	loadCtx, cancel := context.WithCancel(s.appContext())
 	s.replaceActiveLoadCancel(loadSeq, cancel)
 
-	chatList := s.currentMessageList()
-	if chatList != nil {
-		chatList.SetTitle(conversationPaneTitle(target, time.Time{}, "syncing…")).
-			SetBorder(true).
-			SetTitleAlign(tview.AlignCenter)
-	}
+	s.ui.msgs.paneTitle = conversationPaneTitle(target, time.Time{}, "syncing…")
 
-	done := make(chan struct{})
-	go s.loadMessages(loadCtx, target, loadSeq, done)
+	return func() tea.Msg {
+		messages, err := s.fetchMessages(loadCtx, target)
+		if err != nil {
+			atomic.CompareAndSwapUint64(&s.activeLoadSeq, loadSeq, 0)
+			if isLoadCancellation(loadCtx, err) {
+				return nil
+			}
+			return messagesLoadErrorMsg{target: target, err: err, loadSeq: loadSeq}
+		}
+		atomic.CompareAndSwapUint64(&s.activeLoadSeq, loadSeq, 0)
+		return messagesLoadedMsg{
+			target:            target,
+			messages:          messages,
+			syncedAt:          time.Now(),
+			loadSeq:           loadSeq,
+			preserveSelection: false,
+		}
+	}
 }
 
-// composerKeyHandler handles keys while the composer input has focus.
-// Tab/Backtab return focus to the messages list; Backspace clears a pending
-// thread reply; Escape falls through to the input field's built-in handler
-// (which aborts input and returns focus).
-func (s *AppState) composerKeyHandler() func(event *tcell.EventKey) *tcell.EventKey {
-	return func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyTab, tcell.KeyBacktab:
-			s.focusComponent(ViChat)
-			return nil
-		case tcell.KeyBackspace:
-			s.clearComposerReply()
-		}
-
-		return event
-	}
+func isLoadCancellation(loadCtx context.Context, err error) bool {
+	return loadCtx.Err() != nil && errors.Is(err, context.Canceled)
 }

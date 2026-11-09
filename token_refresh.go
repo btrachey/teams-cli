@@ -23,7 +23,7 @@ const (
 	tokenRefreshMinInterval     = time.Minute
 	tokenRefreshFailureCooldown = 5 * time.Minute
 	tokenRefreshExpiryGrace     = 2 * time.Minute
-	tokenRefreshOutputTailBytes = 300
+	tokenRefreshOutputTailBytes = 1200
 
 	teamsTokenCheckoutMissing = "unable to locate a usable teams-token checkout (no vendored teams-token/ directory, $TEAMS_TOKEN_DIR, or sibling checkout with installed dependencies); run yarn install in the vendored copy or set --token-refresh-command"
 )
@@ -81,6 +81,13 @@ func isAuthFailure(err error) bool {
 	var sendErr *messageSendError
 	if errors.As(err, &sendErr) {
 		return sendErr.StatusCode == http.StatusUnauthorized || sendErr.StatusCode == http.StatusForbidden
+	}
+
+	// The calendar path carries its own typed status error; match it before
+	// falling back to the textual checks below, which cannot see it.
+	var calErr *calendarResponseError
+	if errors.As(err, &calErr) {
+		return calErr.StatusCode == http.StatusUnauthorized || calErr.StatusCode == http.StatusForbidden
 	}
 
 	message := err.Error()
@@ -548,6 +555,10 @@ func (s *AppState) rebuildTeamsClient() error {
 	s.regionMu.Lock()
 	s.messageRegion = ""
 	s.regionMu.Unlock()
+
+	// Image fetches may have been rejected by the media service with the
+	// old credentials; give them a fresh chance.
+	s.resetImageAuth()
 
 	s.appLogger().Info("teams client rebuilt with refreshed tokens")
 	return nil

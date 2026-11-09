@@ -4,30 +4,27 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	teams_api "github.com/fossteams/teams-api"
 	"github.com/fossteams/teams-api/pkg/csa"
-	"github.com/rivo/tview"
 	"github.com/sirupsen/logrus"
 )
 
 type AppState struct {
-	app         *tview.Application
-	pages       *tview.Pages
 	logger      *logrus.Logger
 	logFilePath string
 	ctx         context.Context
 	cancel      context.CancelFunc
 
 	TeamsState
-	components                   map[string]tview.Primitive
+	send                         func(tea.Msg)
+	ui                           uiState
 	loadSeq                      uint64
 	activeLoadSeq                uint64
 	messageLimit                 int
-	focusedComponent             string
-	previousFocus                string
-	chatPaneFocusable            bool
 	httpClient                   *http.Client
 	liveRefreshDisabled          bool
 	liveMessageRefreshEvery      time.Duration
@@ -53,23 +50,42 @@ type AppState struct {
 	refreshTokensOverride    func(ctx context.Context) error
 	newTeamsClientOverride   func() (*teams_api.TeamsClient, error)
 	skypeAuthHeaderOverride  func() (string, error)
+	fetchMessagesOverride    func(ctx context.Context, target ConversationTarget) ([]csa.ChatMessage, error)
 
 	composerReply      replyContext
 	conversationLoaded bool
 	displayedMessages  []csa.ChatMessage
-	messageRegion      string
-	regionMu           sync.Mutex
-	composerInput      *tview.InputField
-	sendInFlight       uint32
+	// lastMessageAt holds the newest message time seen per conversation;
+	// it orders the conversations list and is only touched from the UI
+	// loop (Update) plus the list builder.
+	lastMessageAt map[string]time.Time
+	// readAck carries the local unread acknowledgments (conversations the
+	// user opened here). UI-loop only, like lastMessageAt.
+	readAck              unreadAck
+	imageMu              sync.Mutex
+	imageInFlight        map[string]bool
+	imageAuthBlockedFlag bool
+	imageTokenMu         sync.Mutex
+	imageToken           string
+	imageTokenExpiry     time.Time
+	messageRegion        string
+	regionMu             sync.Mutex
+	sendInFlight         uint32
+
+	// calendar holds the calendar section's server-side state (region cache,
+	// fetched events, paging). Kept as a struct so calendar fields never
+	// collide with the chat fields above.
+	calendar calendarState
 }
 
 const (
-	loadingBarWidth = 18
-
-	loadingPulseWidth                      = 5
 	loadingTickInterval                    = 120 * time.Millisecond
 	helpBarHeight                          = 1
-	composerHeight                         = 3
+	composerHeight                         = 6
+	composerPaddingX                       = 2
+	conversationPaneGap                    = 2
+	composerGap                            = 1
+	composerContentRows                    = composerHeight - 2
 	defaultLiveMessageRefreshInterval      = 5 * time.Second
 	defaultLiveConversationRefreshInterval = 15 * time.Second
 	messageRequestTimeout                  = 5 * time.Second
@@ -82,12 +98,6 @@ const (
 type replyContext struct {
 	target    ConversationTarget
 	messageID string
-}
-
-type treeViewState struct {
-	expandedPaths    map[string]struct{}
-	selectedPath     string
-	selectedTargetID string
 }
 
 func newMessageHTTPClient() *http.Client {
@@ -131,15 +141,18 @@ func (s *AppState) appLogger() *logrus.Logger {
 	return discardLogger
 }
 
+// requestStop tears down background work. It must never touch the
+// Bubble Tea program: quitting is expressed as a tea.Quit command
+// returned from Update. Calling program.Kill() here from inside Update
+// cancels the program context while the event loop still has to hand
+// the current command to the (now-exited) command handler, which
+// strands Run forever.
 func (s *AppState) requestStop() {
 	s.shutdownOnce.Do(func() {
 		s.appLogger().WithField("log_file", s.logFilePath).Info("shutdown requested")
 		s.cancelActiveLoad()
 		if s.cancel != nil {
 			s.cancel()
-		}
-		if s.app != nil {
-			s.app.Stop()
 		}
 	})
 }
@@ -186,16 +199,6 @@ func (s *AppState) setCurrentConversation(target ConversationTarget) {
 
 	s.currentConversation = target
 	s.currentConversationSet = true
-	s.currentMessagesSignature = ""
-	s.lastMessageSyncAt = time.Time{}
-}
-
-func (s *AppState) clearCurrentConversation() {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-
-	s.currentConversation = ConversationTarget{}
-	s.currentConversationSet = false
 	s.currentMessagesSignature = ""
 	s.lastMessageSyncAt = time.Time{}
 }
@@ -287,30 +290,18 @@ func (s *AppState) isChannelConversation(conversationID string) bool {
 	return ok
 }
 
-func (s *AppState) currentMessageList() *tview.List {
-	list, ok := s.components[ViChat].(*tview.List)
-	if !ok {
-		return nil
-	}
-
-	return list
+// messageAtCurrentIndex returns the message under the messages-pane cursor,
+// or false when the pane shows a placeholder row.
+func (s *AppState) messageAtCurrentIndex() (*csa.ChatMessage, bool) {
+	return s.ui.msgs.currentMessage()
 }
 
-func (s *AppState) messageAtCurrentListIndex() (*csa.ChatMessage, bool) {
-	list := s.currentMessageList()
-	if list == nil {
-		return nil, false
-	}
+// staleLoad reports whether a background load result is superseded.
+func (s *AppState) staleLoad(loadSeq uint64) bool {
+	return atomic.LoadUint64(&s.loadSeq) != loadSeq
+}
 
-	if list.GetItemCount() != len(s.displayedMessages) {
-		// The list holds a hint or error placeholder, not real messages.
-		return nil, false
-	}
-
-	index := list.GetCurrentItem()
-	if index < 0 || index >= len(s.displayedMessages) {
-		return nil, false
-	}
-
-	return &s.displayedMessages[index], true
+// activeLoadIs reports whether loadSeq is the load currently in flight.
+func (s *AppState) activeLoadIs(loadSeq uint64) bool {
+	return atomic.LoadUint64(&s.activeLoadSeq) == loadSeq
 }

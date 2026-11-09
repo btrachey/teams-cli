@@ -84,18 +84,40 @@ What "standalone" means on the target machine:
 - Automatically load and read recent messages in selected conversations.
 - Background refresh for both message lists and conversation trees.
 - Automatic token refresh: when the stored `token-skype.jwt` / `token-chatsvcagg.jwt` expire, teams-cli re-runs the teams-token Electron flow (which reuses its saved SSO session) and reconnects without a restart.
-- Navigate the UI entirely with keyboard shortcuts.
+- Navigate the UI entirely with keyboard shortcuts, or drive it with the
+  mouse: wheel scrolls the focused pane, clicks select conversations,
+  messages, and the composer.
 - Clean shutdown on `q` or `Ctrl+C`.
+- **Calendar**: press **c** to view your upcoming Teams meetings (fetched from the Teams middle-tier calendar service with the same skype token the chat client uses) — no Microsoft Graph setup required.
+- **Unread indicators**: conversations with messages you haven't read show a blue `●` next to the name, using Teams' own read state (a chat's dot also never counts messages you sent yourself); opening a conversation clears its dot instantly.
 
 ### Keyboard Navigation
-- **Arrow Keys**: Move up/down lists, expand (`Right`) or collapse (`Left`) trees.
+Movement is vim-first; arrow keys work everywhere too.
+- **j / k** (or **Down / Up**): Move within the focused pane.
+- **g / G** (or **Home / End**): Jump to the top/bottom of the conversation.
+- **PgUp / PgDn**: Page through the conversation.
 - **Enter**: Open the selected channel or chat.
+- **/**: Filter the conversations list (type to narrow, `Enter` keeps the
+  filter, `Esc` clears it).
 - **m**: Open the composer to send a message to the current conversation.
 - **r**: Reply to the highlighted message (channels only; chats send a top-level message).
-- **Tab**: Switch focus between the conversations tree, messages pane, and composer.
-- **Esc**: Go back one level or return to the conversations tree.
+- **Alt+Enter**: Insert a newline in the composer (`Enter` sends).
+- **Backspace**: Delete at the cursor; also cancels a pending thread reply.
+- **h / l** (or **Tab**): Move focus left/right between the conversations,
+  messages, and composer panes.
+- **Esc**: Return to the conversations list.
 - **?**: Show/hide the full keyboard help inside the app.
 - **q**: Quit the app.
+
+### Calendar (`c`)
+Press **c** from the main view to open the calendar section; it lists meetings for the current week and shows the selected meeting's details (time, organizer, location, RSVP, join link) on the right.
+- **j / k** (or **Down / Up**): Move between meetings.
+- **g / G**, **PgUp / PgDn**: Jump / page through the list.
+- **h / l** (or **Tab**): Move focus between the meeting list and the details pane.
+- **a / [** and **d / ]**: Move the window to the earlier / next range of days; **t** jumps back to today.
+- **r**: Reload the current window.
+- **Enter**: Reveal the selected meeting's details (the join link, when it is an online meeting).
+- **c** or **Esc**: Return to chat.
 
 ### Diagnostics
 If you have issues logging in or starting the app, run the built-in doctor to test token validity, automatic token refresh setup, and network reachability:

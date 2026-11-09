@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/fossteams/teams-api/pkg/csa"
-	"github.com/rivo/tview"
 	"github.com/sirupsen/logrus"
 )
 
@@ -93,42 +92,15 @@ func (s *AppState) refreshSelectedConversationMessages() {
 			"conversation_id":    target.ID,
 			"conversation_title": target.Title,
 		}).WithError(err).Warn("live message refresh failed")
-		s.app.QueueUpdateDraw(func() {
-			select {
-			case <-s.appContext().Done():
-				return
-			default:
-			}
-
-			if !s.currentConversationIs(target.ID) {
-				return
-			}
-			s.updateConversationPaneTitle(target, time.Time{}, "live retry "+time.Now().Format("15:04:05"))
-		})
+		s.sendUIMsg(liveMessagesRetryMsg{target: target, at: time.Now()})
 		return
 	}
 
-	signature := messagesSignature(messages)
-	syncedAt := time.Now()
-	s.app.QueueUpdateDraw(func() {
-		select {
-		case <-s.appContext().Done():
-			return
-		default:
-		}
-
-		currentTarget, ok, _, _ := s.currentConversationSnapshot()
-		if !ok || currentTarget.ID != target.ID {
-			return
-		}
-
-		s.rememberConversationSync(currentTarget, signature, syncedAt)
-		if signature == previousSignature {
-			s.updateConversationPaneTitle(currentTarget, syncedAt, "")
-			return
-		}
-
-		s.renderConversationMessages(currentTarget, messages, syncedAt, true)
+	s.sendUIMsg(liveMessagesMsg{
+		target:            target,
+		messages:          messages,
+		syncedAt:          time.Now(),
+		previousSignature: previousSignature,
 	})
 }
 
@@ -148,114 +120,7 @@ func (s *AppState) refreshConversationTree() {
 		return
 	}
 
-	s.app.QueueUpdateDraw(func() {
-		select {
-		case <-s.appContext().Done():
-			return
-		default:
-		}
-
-		treeView, ok := s.components[TrChat].(*tview.TreeView)
-		if !ok {
-			return
-		}
-
-		state := captureTreeViewState(treeView.GetRoot(), treeView.GetCurrentNode())
-		s.applyConversationData(data)
-
-		rootNode, selectedNode, _ := s.buildConversationTree(state)
-		treeView.SetRoot(rootNode)
-		treeView.SetCurrentNode(selectedNode)
-		if selectedNode == nil {
-			return
-		}
-
-		if target, ok := selectedNode.GetReference().(ConversationTarget); ok && s.currentConversationIs(target.ID) {
-			_, _, _, syncedAt := s.currentConversationSnapshot()
-			s.updateCurrentConversationTarget(target)
-			s.updateConversationPaneTitle(target, syncedAt, "")
-			return
-		}
-
-		s.handleTreeSelectionChange(selectedNode)
-	})
-}
-
-func (s *AppState) loadMessages(ctx context.Context, target ConversationTarget, loadSeq uint64, done chan struct{}) {
-	defer close(done)
-	defer s.clearActiveLoadCancel(loadSeq)
-
-	s.appLogger().WithFields(logrus.Fields{
-		"conversation_id":    target.ID,
-		"conversation_title": target.Title,
-		"message_limit":      s.messageLimit,
-		"load_seq":           loadSeq,
-	}).Debug("loading conversation messages")
-
-	messages, err := s.fetchMessages(ctx, target)
-	if err != nil {
-		atomic.CompareAndSwapUint64(&s.activeLoadSeq, loadSeq, 0)
-		if errors.Is(err, context.Canceled) {
-			s.appLogger().WithFields(logrus.Fields{
-				"conversation_id": target.ID,
-				"load_seq":        loadSeq,
-			}).Debug("conversation message load cancelled")
-			return
-		}
-		if atomic.LoadUint64(&s.loadSeq) != loadSeq {
-			return
-		}
-
-		s.appLogger().WithFields(logrus.Fields{
-			"conversation_id":    target.ID,
-			"conversation_title": target.Title,
-			"load_seq":           loadSeq,
-		}).WithError(err).Warn("conversation message load failed")
-		s.app.QueueUpdateDraw(func() {
-			select {
-			case <-s.appContext().Done():
-				return
-			default:
-			}
-
-			currentTarget, ok, _, _ := s.currentConversationSnapshot()
-			if !ok || currentTarget.ID != target.ID {
-				return
-			}
-
-			s.renderConversationLoadError(currentTarget, err)
-		})
-		return
-	}
-
-	if atomic.LoadUint64(&s.loadSeq) != loadSeq {
-		return
-	}
-
-	atomic.CompareAndSwapUint64(&s.activeLoadSeq, loadSeq, 0)
-	syncedAt := time.Now()
-	signature := messagesSignature(messages)
-	s.appLogger().WithFields(logrus.Fields{
-		"conversation_id":    target.ID,
-		"conversation_title": target.Title,
-		"message_count":      len(messages),
-		"load_seq":           loadSeq,
-	}).Debug("conversation messages loaded")
-	s.app.QueueUpdateDraw(func() {
-		select {
-		case <-s.appContext().Done():
-			return
-		default:
-		}
-
-		currentTarget, ok, _, _ := s.currentConversationSnapshot()
-		if !ok || currentTarget.ID != target.ID {
-			return
-		}
-
-		s.rememberConversationSync(currentTarget, signature, syncedAt)
-		s.renderConversationMessages(currentTarget, messages, syncedAt, false)
-	})
+	s.sendUIMsg(treeRefreshedMsg{data: data})
 }
 
 func shouldRetryMessageFetch(err error) bool {
@@ -305,6 +170,10 @@ func (s *AppState) waitForMessageFetchRetry(ctx context.Context, attempt int) er
 }
 
 func (s *AppState) fetchMessages(ctx context.Context, target ConversationTarget) ([]csa.ChatMessage, error) {
+	if s.fetchMessagesOverride != nil {
+		return s.fetchMessagesOverride(ctx, target)
+	}
+
 	if s.client() == nil {
 		return nil, fmt.Errorf("teams client is nil")
 	}

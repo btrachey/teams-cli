@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/rivo/tview"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sirupsen/logrus"
 )
 
@@ -69,12 +69,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := tview.NewApplication()
 	rootCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
 	state := AppState{
-		app:                          app,
 		logger:                       logger,
 		logFilePath:                  logSetup.Path,
 		messageLimit:                 options.MessageLimit,
@@ -91,13 +89,12 @@ func main() {
 	state.initRuntime(rootCtx)
 	defer state.requestStop()
 
-	go func() {
-		<-state.appContext().Done()
-		app.Stop()
-	}()
+	teaProgram := tea.NewProgram(newChatModel(&state), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	state.createUI(teaProgram)
 
-	state.createApp()
-	if err := app.EnableMouse(true).Run(); err != nil {
+	go state.start()
+
+	if _, err := teaProgram.Run(); err != nil {
 		logger.WithError(err).WithField("log_file", logSetup.Path).Error("tui runtime failed")
 		fmt.Fprintf(os.Stderr, "teams-cli failed: %v\nSee log: %s\n", err, logSetup.Path)
 		os.Exit(1)

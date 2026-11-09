@@ -1,5 +1,5 @@
 import {
-  BrowserWindow, app, session,
+  BrowserWindow, Menu, app, session,
 } from 'electron';
 
 import { homedir } from 'os';
@@ -66,11 +66,149 @@ function getLoginURL(type: TeamsSkype, tenantId: string) : string {
   return loginUrl.toString();
 }
 
+const MAX_LOAD_FAILURE_RETRIES = 3;
+let loadFailures = 0;
+
 function authorize(type: TeamsSkype, tenantId: string) {
   console.log(`Authorizing ${type} with tenantId=${tenantId}`);
-  win.loadURL(getLoginURL(type, tenantId), {
+  loadFailures = 0;
+  // loadURL rejects when the navigation fails; without this catch the
+  // rejection is swallowed, the window sits blank forever and teams-cli
+  // waits out its full timeout blind. Retries are driven by did-fail-load.
+  win!.loadURL(getLoginURL(type, tenantId), {
     userAgent: USER_AGENT,
+  }).catch((err) => {
+    console.error(`loadURL rejected: ${err}`);
   });
+}
+
+// A failed main-frame load (DNS blip, TLS error, offline Wi-Fi) used to
+// leave the window blank with no log and no way out. Retry a few times
+// with backoff, then give up loudly so teams-cli surfaces the reason
+// instead of timing out. ERR_ABORTED (-3) is our own webContents.stop()
+// or a preventDefault'd redirect, never a real failure.
+function attachLoadFailureHandling() {
+  win!.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) {
+      return;
+    }
+    loadFailures += 1;
+    console.error(`Login load failed (${errorCode}: ${errorDescription}) for ${validatedURL}`);
+    if (loadFailures > MAX_LOAD_FAILURE_RETRIES) {
+      console.error(`Giving up after ${MAX_LOAD_FAILURE_RETRIES} failed login loads: ${errorCode} ${errorDescription}`);
+      app.exit(1);
+      return;
+    }
+    const attempt = loadFailures;
+    setTimeout(() => {
+      if (win === null || win.isDestroyed()) {
+        return;
+      }
+      console.log(`Retrying login load (attempt ${attempt}/${MAX_LOAD_FAILURE_RETRIES})`);
+      win.loadURL(validatedURL, { userAgent: USER_AGENT }).catch((err) => {
+        console.error(`retry loadURL rejected: ${err}`);
+      });
+    }, 1000 * attempt);
+  });
+
+  // A renderer crash (plausible on this pinned Electron) also blanks the
+  // window without any other event. Reload once, then bail out.
+  let rendererReloaded = false;
+  win!.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`Renderer gone (${details.reason}, exitCode=${details.exitCode})`);
+    if (rendererReloaded) {
+      console.error('Renderer crashed twice; giving up');
+      app.exit(1);
+      return;
+    }
+    rendererReloaded = true;
+    // Electron 12's reload() returns void; a failed reload surfaces via
+    // did-fail-load, which the retry logic above already handles.
+    win!.webContents.reload();
+  });
+}
+
+// Standard macOS Edit menu. This is what makes the sign-in window behave
+// like a browser for passwords: macOS attaches its system AutoFill submenu
+// (Edit ▸ AutoFill ▸ Passwords…, backed by the Passwords app / iCloud
+// Keychain, with Touch ID approval) to the Edit menu of any app that has a
+// standard one — verified in the running app via accessibility inspection.
+// The pinned Electron 12 has no AutoFill API of its own and does not build
+// that menu by default, so the flow installs it explicitly; it also gives
+// the form working ⌘C/⌘V/⌘A.
+function installEditMenu() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+  const template: Electron.MenuItemConstructorOptions[] = [
+    { role: 'appMenu' },
+    { role: 'editMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// Blank-page watchdog. A navigation can also wedge silently: no
+// dom-ready, no did-fail-load (stalled TLS handshake, blackholed
+// socket, SPA that boots but never paints). The old flow then showed a
+// pure-white window for teams-cli's entire timeout. If the page has not
+// finished loading within the deadline, reload it a bounded number of
+// times; a rendered page awaiting human MFA input is left alone, so a
+// legitimate interactive sign-in is never interrupted.
+const LOAD_DEADLINE_MS = 20000;
+const MAX_BLANK_RELOADS = 2;
+
+function attachBlankPageWatchdog() {
+  let blankReloads = 0;
+  let timer: NodeJS.Timeout | undefined;
+  let lastUrl = '';
+
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (win === null || win.isDestroyed()) {
+        return;
+      }
+      if (!win.webContents.isLoading()) {
+        // Page finished (interactive login waiting on the user) — the
+        // watchdog must not touch it.
+        return;
+      }
+      blankReloads += 1;
+      if (blankReloads > MAX_BLANK_RELOADS) {
+        console.error(`Giving up: login page stuck blank after ${MAX_BLANK_RELOADS} reloads`);
+        app.exit(1);
+        return;
+      }
+      console.error(`Login page still blank after ${LOAD_DEADLINE_MS}ms; re-loading ${lastUrl} (attempt ${blankReloads}/${MAX_BLANK_RELOADS})`);
+      if (lastUrl) {
+        // reload() on a navigation that never committed fails with an
+        // empty-URL did-fail-load (-300), which then poisons the
+        // did-fail-load retry loop with loadURL(''). Re-hitting the URL
+        // captured at did-start-navigation works for pending loads too.
+        win.loadURL(lastUrl, { userAgent: USER_AGENT }).catch((err) => {
+          console.error(`watchdog loadURL rejected: ${err}`);
+        });
+      }
+    }, LOAD_DEADLINE_MS);
+  };
+
+  win!.webContents.on('did-start-navigation', (_e, url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) {
+      lastUrl = url;
+      arm();
+    }
+  });
+  win!.webContents.on('did-finish-load', () => clearTimeout(timer));
+  // Only hand the deadline off when the retry loop actually takes
+  // ownership (main-frame, non-abort failure); -3 here is our own
+  // interrupted navigation, and subframe failures must not disarm the
+  // watchdog for a still-pending main frame.
+  win!.webContents.on('did-fail-load', (_e, errorCode, _desc, _url, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3) {
+      clearTimeout(timer);
+    }
+  });
+  arm();
 }
 
 function saveTeamsToken(token: string, type: TeamsSkype) {
@@ -240,6 +378,9 @@ app.whenReady().then(() => {
     if (DEBUG) {
       win.webContents.openDevTools();
     }
+    installEditMenu();
+    attachLoadFailureHandling();
+    attachBlankPageWatchdog();
     win.webContents.on('will-navigate', (e, url) => {
       if (url.startsWith('https://teams.microsoft.com/')) {
         e.preventDefault();

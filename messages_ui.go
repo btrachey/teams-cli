@@ -10,22 +10,23 @@ import (
 	"time"
 
 	"github.com/fossteams/teams-api/pkg/csa"
-	"github.com/rivo/tview"
 )
 
 func conversationPaneTitle(target ConversationTarget, syncedAt time.Time, status string) string {
+	// target.Title derives from network-sourced team/channel/chat names.
+	title := sanitizeText(target.Title)
 	if status == "" {
 		if syncedAt.IsZero() {
-			return target.Title
+			return title
 		}
 		status = "live " + syncedAt.Format("15:04:05")
 	}
 
-	if target.Title == "" {
+	if title == "" {
 		return status
 	}
 
-	return target.Title + " | " + status
+	return title + " | " + status
 }
 
 func messagesSignature(messages []csa.ChatMessage) string {
@@ -70,107 +71,6 @@ func isSystemActivityType(messageType string) bool {
 	return strings.HasPrefix(messageType, "ThreadActivity/") ||
 		strings.HasPrefix(messageType, "Event/") ||
 		strings.HasPrefix(messageType, "System")
-}
-
-func (s *AppState) renderConversationMessages(target ConversationTarget, messages []csa.ChatMessage, syncedAt time.Time, preserveSelection bool) {
-	chatList := s.components[ViChat].(*tview.List)
-	previousCount := chatList.GetItemCount()
-	previousIndex := chatList.GetCurrentItem()
-	followTail := previousCount > 0 && previousIndex >= previousCount-1
-	status := ""
-	if !syncedAt.IsZero() {
-		status = s.conversationSyncStatus(syncedAt)
-	}
-
-	chatList.Clear()
-	chatList.SetTitle(conversationPaneTitle(target, time.Time{}, status)).
-		SetBorder(true).
-		SetTitleAlign(tview.AlignCenter)
-	s.chatPaneFocusable = true
-
-	displayed := make([]csa.ChatMessage, 0, len(messages))
-	for _, message := range messages {
-		// System activity rows (thread membership events, call logs) are
-		// not chat text and stay hidden unconditionally: a call started
-		// by the signed-in user stores the user's own contact URL in
-		// from with no display name, so the author gate below alone
-		// would surface call/meeting XML as chat text.
-		if isSystemActivityType(message.MessageType) {
-			continue
-		}
-
-		author := strings.TrimSpace(message.ImDisplayName)
-		if author == "" {
-			// Remaining nameless messages are this app's own sends that
-			// omitted imdisplayname (stored nameless server-side).
-			// Render only those, under the signed-in user's display
-			// name; nameless messages from anyone else stay hidden.
-			if !s.isSelfAuthoredMessage(message) {
-				continue
-			}
-			author = strings.TrimSpace(s.selfDisplayName())
-			if author == "" {
-				author = "You"
-			}
-		}
-
-		mainText, secondaryText := messageListItem(author, message.Content)
-		chatList.AddItem(mainText, secondaryText, 0, nil)
-		displayed = append(displayed, message)
-	}
-
-	s.displayedMessages = displayed
-	s.conversationLoaded = true
-
-	if chatList.GetItemCount() == 0 {
-		chatList.AddItem("No recent messages found", fmt.Sprintf("Loaded the latest %d messages for this conversation.", s.messageLimit), 0, nil)
-	}
-
-	// Always land on the newest message (last row; messages are sorted
-	// ascending by ComposeTime) and tview's Draw scrolls it into view.
-	// Refreshes keep the user's place while scrolling history, unless they
-	// were already pinned at the tail — then keep following new messages.
-	last := chatList.GetItemCount() - 1
-	switch {
-	case !preserveSelection || previousCount == 0, followTail:
-		chatList.SetCurrentItem(last)
-	case previousIndex <= last:
-		chatList.SetCurrentItem(previousIndex)
-	default:
-		chatList.SetCurrentItem(last)
-	}
-}
-
-func (s *AppState) updateConversationPaneTitle(target ConversationTarget, syncedAt time.Time, status string) {
-	chatList, ok := s.components[ViChat].(*tview.List)
-	if !ok {
-		return
-	}
-	if status == "" && !syncedAt.IsZero() {
-		status = s.conversationSyncStatus(syncedAt)
-	}
-
-	chatList.SetTitle(conversationPaneTitle(target, time.Time{}, status)).
-		SetBorder(true).
-		SetTitleAlign(tview.AlignCenter)
-}
-
-func (s *AppState) renderConversationLoadError(target ConversationTarget, err error) {
-	chatList, ok := s.components[ViChat].(*tview.List)
-	if !ok {
-		return
-	}
-
-	s.displayedMessages = nil
-	s.conversationLoaded = false
-	mainText, secondaryText := conversationLoadErrorText(err)
-	chatList.Clear()
-	chatList.SetTitle(conversationPaneTitle(target, time.Time{}, "load failed")).
-		SetBorder(true).
-		SetTitleAlign(tview.AlignCenter)
-	chatList.AddItem(mainText, secondaryText, 0, nil)
-	chatList.AddItem("Retry", "Press Right or l to retry this conversation. Esc returns to the list.", 0, nil)
-	s.chatPaneFocusable = true
 }
 
 func conversationLoadErrorText(err error) (string, string) {

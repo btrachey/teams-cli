@@ -169,13 +169,6 @@ const (
 	imageMarkerSuffix = "\x00"
 )
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 type deferredImage struct {
 	row  int
 	col  int
@@ -193,13 +186,6 @@ func splitImageMarker(line string) (prefix string, esc string, span int, col int
 		return line, "", 0, 0, false
 	}
 	oscEnd := oscStart + bel + 1
-
-	if oscEnd > len(line) {
-		oscEnd = len(line)
-	}
-	if oscEnd < oscStart {
-		oscEnd = oscStart
-	}
 	rest := line[oscEnd:]
 	span, col = 1, 0
 	if strings.HasPrefix(rest, imageMarkerPrefix) {
@@ -301,7 +287,7 @@ func (r *standardRenderer) flush() {
 		if stillThere {
 			continue
 		}
-		for row := old.row; row < old.row+maxInt(1, old.span); row++ {
+		for row := old.row; row < old.row+max(1, old.span); row++ {
 			// Clear only the image columns; the line prefix (list column)
 			// stays intact. These rows are forced to repaint below so the
 			// rest of the line (borders, padding) is restored.

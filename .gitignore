@@ -2,8 +2,6 @@
 .DS_Store
 teams-cli
 dist/
-!teams-token/dist/
-teams-token/node_modules/
 token-*.jwt
 *.jwt
 _scratch/

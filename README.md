@@ -22,14 +22,14 @@ Please browse the [GitHub Wiki](https://github.com/vaishnavucv/teams-cli/wiki) f
 
 ### Requirements
 - [Golang](https://golang.org/) 1.26.1 or newer
-- Teams JWT tokens: minted by the token flow — embedded in the binary (auto-bootstraps its
-  Electron runtime on first refresh) or run from the vendored `teams-token/` directory
-  (`cd teams-token && yarn install` once for development builds)
+- Nothing else: on first launch teams-cli opens a Microsoft sign-in window
+  (its built-in flow on a pinned Electron runtime, downloaded once) and saves
+  the Teams tokens. Run `teams-cli login --switch-account` to change accounts.
 - A terminal with cursor-addressing support (e.g. Terminal.app, iTerm2)
 
 ### Basic Usage
 
-Run the app locally once you have obtained your tokens:
+Run the app locally (the first run signs you in):
 ```bash
 go run ./
 ```
@@ -62,11 +62,10 @@ What "standalone" means on the target machine:
 
 - **No repo, node, or yarn required.** The binary reads tokens from
   `~/.config/fossteams` (or `--token-dir` / `MS_TEAMS_*_TOKEN`).
-- **Automatic token refresh works out of the box.** When tokens expire and no
-  `teams-token/` checkout is discoverable, the binary materializes its embedded
-  token flow and downloads the pinned Electron runtime (~90 MB, SHA-256
-  verified against the upstream release, cached under the user cache directory,
-  fetched once) — see [Diagnostics](#diagnostics) for the discovery order and
+- **Sign-in and token refresh work out of the box.** The binary embeds its
+  sign-in flow (`internal/auth/token_flow.js`) and downloads the pinned Electron runtime
+  (~90 MB, SHA-256 verified against the upstream release, cached under the user
+  cache directory, fetched once) — see [Diagnostics](#diagnostics) for the
   flags.
 - **First refresh needs network** for that one-time Electron download, and if
   the saved SSO session has lapsed the login window opens for an interactive
@@ -83,41 +82,45 @@ What "standalone" means on the target machine:
 - Browse your Teams, Channels, and direct/group Chats from a TUI.
 - Automatically load and read recent messages in selected conversations.
 - Background refresh for both message lists and conversation trees.
-- Automatic token refresh: when the stored `token-skype.jwt` / `token-chatsvcagg.jwt` expire, teams-cli re-runs the teams-token Electron flow (which reuses its saved SSO session) and reconnects without a restart.
+- Automatic token refresh: when the stored `token-skype.jwt` / `token-chatsvcagg.jwt` expire, teams-cli re-runs its sign-in flow (which reuses the saved SSO session) and reconnects without a restart.
 - Navigate the UI entirely with keyboard shortcuts, or drive it with the
   mouse: wheel scrolls the focused pane, clicks select conversations,
   messages, and the composer.
 - Clean shutdown on `q` or `Ctrl+C`.
-- **Calendar**: press **c** to view your upcoming Teams meetings (fetched from the Teams middle-tier calendar service with the same skype token the chat client uses) — no Microsoft Graph setup required.
-- **Unread indicators**: conversations with messages you haven't read show a blue `●` next to the name, using Teams' own read state (a chat's dot also never counts messages you sent yourself); opening a conversation clears its dot instantly.
+- **Tabs**: the screen is laid out like [gh-dash](https://www.gh-dash.dev): a **Messages** tab and a **Calendar** tab across the top (each with its unread or meeting count), a sidebar list on the left, and the selected conversation or meeting on the right.
+- **Calendar**: press **s** (or **2**) for the Calendar tab and your upcoming Teams meetings (fetched from the Teams middle-tier calendar service with the same skype token the chat client uses) — no Microsoft Graph setup required.
+- **Unread indicators**: conversations with messages you haven't read show a blue `●` next to the name, using Teams' own read state (a chat's dot also never counts messages you sent yourself); opening a conversation clears its dot instantly. After a conversation has been on screen for two seconds, teams-cli also sends Teams the same read receipt the desktop client does, so it shows as read on your other devices too (and as "seen" to others where read receipts are on). Pass `--no-read-receipts` to keep reading locally only.
 
 ### Keyboard Navigation
-Movement is vim-first; arrow keys work everywhere too.
+The keys follow [gh-dash](https://www.gh-dash.dev/getting-started/keybindings/); arrow keys work everywhere too.
 - **j / k** (or **Down / Up**): Move within the focused pane.
-- **g / G** (or **Home / End**): Jump to the top/bottom of the conversation.
-- **PgUp / PgDn**: Page through the conversation.
-- **Enter**: Open the selected channel or chat.
-- **/**: Filter the conversations list (type to narrow, `Enter` keeps the
+- **g / G** (or **Home / End**): Jump to the first/last item.
+- **ctrl+d / ctrl+u** (or **PgDn / PgUp**): Page the conversation (also from the conversation list).
+- **s**, **h / l** (or **Left / Right**), **1 / 2**, or click a tab: Switch between the Messages and Calendar tabs.
+- **Enter**: Open the selected conversation.
+- **Tab**: Move focus between the conversation list and the conversation.
+- **/**: Filter the conversation list (type to narrow, `Enter` keeps the
   filter, `Esc` clears it).
-- **m**: Open the composer to send a message to the current conversation.
-- **r**: Reply to the highlighted message (channels only; chats send a top-level message).
-- **Alt+Enter**: Insert a newline in the composer (`Enter` sends).
-- **Backspace**: Delete at the cursor; also cancels a pending thread reply.
-- **h / l** (or **Tab**): Move focus left/right between the conversations,
-  messages, and composer panes.
-- **Esc**: Return to the conversations list.
+- **p**: Hide/show the preview (the conversation or meeting details); the list takes the full width while it is hidden.
+- **r**: Refresh the current tab. **R**: Refresh everything.
+- **c**: Comment: on the conversation list, write a message to the selected conversation; on a message, reply to it (channels; chats send a top-level message).
+- **ctrl+d** or **Enter**: Send the message being written. **Alt+Enter** inserts a newline. **Backspace** deletes at the cursor and also cancels a pending thread reply. **Esc** leaves the composer.
+- **o**: Open the selected conversation (or highlighted message) in Teams.
+- **y / Y**: Copy its ID / its Teams link.
+- **Esc**: Return to the conversation list.
 - **?**: Show/hide the full keyboard help inside the app.
 - **q**: Quit the app.
 
-### Calendar (`c`)
-Press **c** from the main view to open the calendar section; it lists meetings for the current week and shows the selected meeting's details (time, organizer, location, RSVP, join link) on the right.
-- **j / k** (or **Down / Up**): Move between meetings.
-- **g / G**, **PgUp / PgDn**: Jump / page through the list.
-- **h / l** (or **Tab**): Move focus between the meeting list and the details pane.
+### Calendar tab (`s` or `2`)
+Switch to the Calendar tab to list meetings for the current week in the left sidebar, with the selected meeting's details (time, organizer, location, RSVP, join link) on the right.
+- **j / k**, **g / G**, **ctrl+d / ctrl+u**: Move, jump, and page through the list.
+- **Enter** or **o**: Open the selected meeting's Teams join link in your browser (online meetings).
+- **y / Y**: Copy the meeting title / join link.
+- **Tab**: Move focus between the meeting list and the details. **p** hides/shows the details.
 - **a / [** and **d / ]**: Move the window to the earlier / next range of days; **t** jumps back to today.
-- **r**: Reload the current window.
-- **Enter**: Reveal the selected meeting's details (the join link, when it is an online meeting).
-- **c** or **Esc**: Return to chat.
+- **r**: Reload the current window. **R**: Refresh everything.
+- **s**, **h / l**, **1**, or **Esc**: Return to the Messages tab.
+- **?**: Toggle the full key help.
 
 ### Diagnostics
 If you have issues logging in or starting the app, run the built-in doctor to test token validity, automatic token refresh setup, and network reachability:
@@ -125,7 +128,7 @@ If you have issues logging in or starting the app, run the built-in doctor to te
 go run ./ doctor
 ```
 
-Token refresh is enabled by default. Discovery order: `--token-refresh-command <cmd>` (any command that rewrites the token files) → `$TEAMS_TOKEN_DIR` → a `teams-token/` checkout next to the working directory or binary → sibling checkouts. With none of those present, teams-cli falls back to the token flow **embedded in the binary**: it downloads the pinned Electron runtime (~90 MB, SHA-256 verified) into the user cache on first refresh, so a copied `teams-cli` binary is fully self-contained — no repo, node, or yarn required. When the saved SSO session has lapsed, the Electron window opens and you can sign in interactively within `--token-refresh-timeout <d>` (default 3m); `--no-auto-refresh` disables the whole mechanism. The flow writes the directory teams-cli actually reads (`--token-dir` included); unmodified external checkouts fall back to mirroring from `~/.config/fossteams`.
+Sign-in and token refresh are enabled by default and use the sign-in flow **embedded in the binary** (`internal/auth/token_flow.js`): it downloads the pinned Electron runtime (~90 MB, SHA-256 verified) into the user cache on first use, so a copied `teams-cli` binary is fully self-contained — no repo, node, or yarn required. A fresh install (no token files) signs in before the TUI starts; `teams-cli login` signs in on demand and `--switch-account` forgets the saved session first. When the saved SSO session has lapsed during a refresh, the window opens and you can sign in within `--token-refresh-timeout <d>` (default 3m). `--token-refresh-command <cmd>` replaces the flow with any command that writes the token files into `$FOSSTEAMS_TOKEN_DIR`; `--no-auto-refresh` disables automatic sign-in and refresh. Tokens are written to the directory teams-cli reads (`--token-dir` included).
 
 ## Support
 

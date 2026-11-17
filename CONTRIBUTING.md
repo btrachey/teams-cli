@@ -10,7 +10,7 @@ Requirements:
 
 - Go 1.26.1 or newer
 - A terminal with cursor-addressing support
-- Teams JWT files generated with `teams-token`
+- A Teams account (`go run ./ login` signs in and writes the token files)
 
 Install dependencies and verify the local build:
 
@@ -65,6 +65,25 @@ go install github.com/anchore/syft/cmd/syft@v1.42.3
 Keyless signing and GitHub attestations are performed in GitHub Actions during
 the protected `main` release flow, because they rely on GitHub OIDC and
 repository-scoped attestation APIs.
+
+## Code Layout
+
+`main.go` only parses the command line and dispatches; everything else lives
+in packages under `internal/`:
+
+| Package | Responsibility |
+|---|---|
+| `internal/config` | Command-line options, defaults, and usage text |
+| `internal/logging` | The structured, secret-redacting log file |
+| `internal/auth` | Token files, the embedded sign-in flow (`token_flow.js`, plain JS with no build step), and refreshing expired tokens |
+| `internal/teams` | The Teams chat backend: client, conversation tree, reading and sending messages |
+| `internal/calendar` | The middle-tier calendar client |
+| `internal/doctor` | `teams-cli doctor` diagnostics |
+| `internal/tui` | The Bubble Tea UI, background loads, and live refresh |
+
+Dependencies point one way: `tui` uses `teams`, `calendar`, and `auth`; the
+backends never import the UI. Test fakes for the Teams backend live in
+`internal/teams/teamstest`.
 
 ## Token Handling
 

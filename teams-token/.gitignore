@@ -1,3 +1,0 @@
-node_modules/
-# dist/main.js is committed: teams-cli launches the vendored flow without a
-# node toolchain. Rebuild with `node_modules/.bin/tsc` after editing src/.

@@ -9,10 +9,16 @@ this repository.
 
 ### Added
 
+- Read receipts: a conversation that stays on screen for two seconds is
+  marked read in Teams itself (the `consumptionhorizon` property the Teams
+  clients set: `PUT …/conversations/{id}/properties?name=consumptionhorizon`
+  with `"<newest message id>;<read time ms>;<newest client message id>"`),
+  so its unread state clears on every device. Scrolling past a
+  conversation does not mark it read. `--no-read-receipts` turns this off.
 - Message composer: send top-level messages to channels and chats, and
-  threaded replies to messages in channels (`m` opens the composer, `r`
-  replies to the highlighted message)
-- Calendar section: press `c` to view upcoming Teams meetings in a dedicated
+  threaded replies to messages in channels (`c` writes to the selected
+  conversation or replies to the highlighted message)
+- Calendar tab: press `s` to view upcoming Teams meetings in a dedicated
   view (meeting list on the left, selected-meeting details — time, organizer,
   location, RSVP, and join link — on the right). Meetings are read from the
   Teams middle-tier calendar service (`teams.microsoft.com/api/mt/part/…/
@@ -20,7 +26,7 @@ this repository.
   no Microsoft Graph app registration is required. The tenant partition is
   discovered from the authz response with a fallback probe list; `a`/`d`
   (`[`/`]`) page the day window, `t` returns to today, `r` reloads, and
-  `h`/`l` move between the list and detail panes.
+  `Tab` moves between the list and detail panes.
 - Unread indicators: conversations the signed-in user has not read show a
   blue `●` next to their name in the conversations list, and the pane title
   carries the total (`Conversations · N unread`). The state comes from
@@ -41,23 +47,56 @@ this repository.
 - Multi-line drafts: `Alt+Enter` inserts a newline in the composer while
   plain `Enter` sends
 - Automatic token refresh: expired `token-skype.jwt` / `token-chatsvcagg.jwt`
-  files are renewed by re-running the vendored teams-token Electron flow (the
-  `teams-token/` directory in this repository, or one found via
-  `TEAMS_TOKEN_DIR`/sibling checkouts; override with `--token-refresh-command`),
-  then the Teams client is rebuilt in place — no restart needed. Flags:
+  files are renewed by re-running the built-in sign-in flow (override with
+  `--token-refresh-command`), then the Teams client is rebuilt in place — no restart needed. Flags:
   `--no-auto-refresh`, `--token-refresh-command <cmd>`,
   `--token-refresh-timeout <d>`; a matching `Token Refresh` check was added to
   `teams-cli doctor`
-- Vendored the teams-token login flow into `teams-token/` (MIT-licensed copy
-  of fossteams/teams-token, see its README/LICENSE) as the maintained origin
-  of the token fetcher
-- The flow is also embedded in the teams-cli binary (`tokenflow/`): with no
-  checkout discoverable, refresh materializes the bundled flow and
-  bootstraps the pinned Electron 12.0.2 runtime (SHA-256 verified download
-  into the user cache, once) — a copied `teams-cli` binary is fully
-  self-contained, no repo/node/yarn required
+- Built-in sign-in: the Microsoft sign-in flow (derived from
+  fossteams/teams-token, MIT) lives in `token_flow.js` and is embedded in the
+  binary, which runs it on a pinned Electron 12.0.2 runtime (SHA-256 verified
+  download into the user cache, once) — a copied `teams-cli` binary is fully
+  self-contained, no repo/node/yarn required. A fresh install signs in before
+  the TUI starts; `teams-cli login [--switch-account]` signs in on demand
 
 ### Changed
+
+- The calendar list is grouped by day: a divider (`── Today · Mon 09 Nov ──`,
+  `Tomorrow`, `Yesterday`, then the date) opens each day, and the top row
+  keeps its day's divider while scrolling. Meeting rows show just the time;
+  all-day events read `all-day`.
+- Keyboard shortcuts follow gh-dash: `s` and `h`/`l` (`←`/`→`) switch
+  tabs, `p` toggles the preview pane, `ctrl+d`/`ctrl+u` page the
+  conversation (also from the list), `r` refreshes the current tab and `R`
+  everything, `o` opens the selected conversation or message in Teams (the
+  join link on the calendar), `y`/`Y` copy its ID/link, and `c` comments:
+  a message to the selected conversation, or a reply to the highlighted
+  message; `ctrl+d` sends. This replaces `m` (message), `r` (reply), `c`
+  (calendar), and `h`/`l` pane focus, which moved to `Tab`.
+- gh-dash style layout: Messages and Calendar tabs across the top (with
+  unread and meeting counts; switch with `1`/`2`, `c`, or a click), the
+  list in a left sidebar split from the content by a vertical rule, and the
+  key help under a rule. The dotted focus boxes are gone; the focused pane
+  shows in its title color.
+- Source reorganized from one flat `package main` into `internal/`
+  packages (`config`, `logging`, `auth`, `teams`, `calendar`, `doctor`,
+  `tui`) with `main.go` reduced to argument dispatch. Token refresh,
+  the Teams backend, and the calendar client no longer hang off the UI
+  state, and the conversation tree is now read under its own lock (it was
+  previously read from the send path without synchronization).
+- The sign-in flow no longer depends on the teams-token project, yarn,
+  TypeScript, axios, jsonwebtoken or uuid (Node built-ins replace them); the
+  vendored `teams-token/` and `tokenflow/` trees and the teams-token checkout
+  discovery (`$TEAMS_TOKEN_DIR`, sibling checkouts, `yarn start`) are gone.
+  Switching accounts clears the SSO session before the window opens, and
+  token files are written with 0600 permissions
+- The vendored bubbletea fork keeps only module sources (see
+  `third_party/bubbletea/PATCHES.md`)
+- The UI is idle when nothing is loading: the spinner only ticks during a
+  load and the once-a-second repaint is gone; the message pane is rendered
+  once per frame instead of twice
+- The mouse wheel over the messages pane moves the message cursor (the view
+  follows), instead of scrolling a viewport that snapped back to the cursor
 
 - The TUI now runs on Bubble Tea (`bubbletea`/`bubbles`/`lipgloss`) instead of
   `rivo/tview`: the whole UI is a pure `Model` (update/view) whose rendering is
@@ -108,6 +147,16 @@ this repository.
   progress component
 
 ### Fixed
+
+- The "Retry" row shown after a failed conversation load now retries
+  (Enter, l or Right); the cursor lands on it
+- Opening the calendar no longer cancels an in-flight conversation load
+  (which stranded the messages pane on "Loading…") or pauses live message
+  refresh; a calendar result arriving after leaving the page is kept
+- Calendar: Enter opens the meeting's join link, `?` toggles help, and the
+  status line names the real window keys (a/[ and d/])
+- Message wrapping, paging and image sizing used a pane width one column
+  wider than the one painted
 
 - The whole screen was scrolled two rows off the top (pane title borders
   invisible): bordered boxes were sized at their inner height instead of
